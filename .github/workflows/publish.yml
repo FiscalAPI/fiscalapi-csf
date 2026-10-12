@@ -1,0 +1,91 @@
+name: NPM Publish
+
+on:
+  workflow_dispatch:
+
+# id-token: write habilita Trusted Publishing (OIDC) de npm, que publica sin token.
+# Mientras no se dé de alta el "trusted publisher" del paquete en npmjs.com, npm usa
+# el NPM_TOKEN del .npmrc que escribe setup-node.
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  build-and-publish:
+    # Solo se publica desde main, aunque el workflow se dispare a mano desde otra rama.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Node 24 trae npm >= 11.5.1, requisito de Trusted Publishing.
+      - name: Setup Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org/'
+
+      - name: Get package version
+        run: echo "VERSION=$(node -p "require('./package.json').version")" >> "$GITHUB_ENV"
+
+      # El registry de npm responde 404 (no 401) a cualquier PUT sin credencial válida.
+      # Sin esta verificación, un token vencido se manifiesta al final como un
+      # "E404 Not Found - PUT" que parece un problema del paquete y no de autenticación.
+      - name: Verify npm credentials
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "$NODE_AUTH_TOKEN" ]; then
+            echo "::error::El secret NPM_TOKEN no existe o está vacío."
+            exit 1
+          fi
+          if ! npm whoami; then
+            echo "::error::NPM_TOKEN inválido o expirado. Los granular access tokens de npm caducan: genera uno nuevo con permiso Read and write sobre el paquete y actualiza el secret NPM_TOKEN."
+            exit 1
+          fi
+          # Informativo: si el token es válido pero no cubre este paquete, el publish
+          # también devolvería 404. Aquí se ve el permiso real que trae el token.
+          npm access list packages || echo "No fue posible listar los permisos del token (no bloquea el publish)."
+
+      - name: Verify version is not already published
+        run: |
+          if npm view "$(node -p "require('./package.json').name")@${VERSION}" version > /dev/null 2>&1; then
+            echo "::error::La versión ${VERSION} ya está publicada en npm. Incrementa la versión en package.json."
+            exit 1
+          fi
+          echo "La versión ${VERSION} está libre."
+
+      # Sin scripts de instalación de dependencias: nada de terceros se ejecuta con el token disponible.
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      # Las mismas compuertas que CI: no se publica nada que no pase lint, tipos y pruebas.
+      - name: Lint, typecheck and test
+        run: |
+          npm run lint
+          npm run typecheck
+          npm test
+
+      - name: Build package
+        run: npm run build
+
+      - name: Verify build artifacts
+        run: |
+          for file in dist/cjs/index.js dist/cjs/index.d.ts dist/cjs/package.json \
+                      dist/esm/index.js dist/esm/index.d.ts dist/esm/package.json; do
+            if [ ! -f "$file" ]; then
+              echo "::error::Falta $file en el build."
+              exit 1
+            fi
+          done
+          echo "Artefactos del build verificados."
+
+      - name: Publish to NPM
+        # El build ya corrió arriba; --ignore-scripts evita que prepack lo repita con el token en el entorno.
+        # --provenance firma el origen del paquete (requiere id-token: write).
+        run: npm publish --access public --provenance --ignore-scripts
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
