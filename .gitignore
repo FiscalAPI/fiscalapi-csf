@@ -1,0 +1,15 @@
+# Dependencias
+node_modules/
+npm-debug.log*
+
+# Salida del build y de las pruebas
+dist/
+coverage/
+*.tsbuildinfo
+*.tgz
+
+# Entorno local
+.env
+.env.*
+.idea/
+.vscode/

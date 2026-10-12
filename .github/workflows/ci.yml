@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # 22.13 es el mínimo de pdfjs-dist (engines); 24 es la versión con la que se publica.
+        node-version: ['22', '24']
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      # El paquete solo debe llevar dist, README.md, LICENSE.txt y package.json.
+      - name: Verify package contents
+        run: |
+          npm pack --dry-run --json > pack.json
+          unexpected=$(node -e "
+            const [pack] = require('./pack.json');
+            const allowed = /^(dist\/.+|README\.md|LICENSE\.txt|package\.json)$/;
+            console.log(pack.files.map(f => f.path).filter(p => !allowed.test(p)).join('\n'));
+          ")
+          if [ -n "$unexpected" ]; then
+            echo "::error::Archivos inesperados en el paquete:"
+            echo "$unexpected"
+            exit 1
+          fi
+          echo "Contenido del paquete verificado."
